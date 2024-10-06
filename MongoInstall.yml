@@ -1,0 +1,124 @@
+---
+- name: Enable SSH Key
+  hosts: mongodb
+  become: true
+  gather_facts: false
+  vars_files:
+    - vars.yml
+  
+  tasks:
+
+    - name: Update apt cache and repository
+      apt:
+        update_cache: yes
+
+    - name: Install gnupg package
+      apt:
+        name: gnupg
+        state: present
+
+    - name: Download MongoDB GPG key
+      become_user: root
+      shell: curl -fsSL https://www.mongodb.org/static/pgp/server-4.4.asc -o /etc/apt/trusted.gpg.d/mongodb-server-4.4.asc
+
+    - name: Add MongoDB repository
+      apt_repository:
+        repo: "deb [ arch=amd64 ] https://repo.mongodb.org/apt/ubuntu bionic/mongodb-org/4.4 multiverse"
+        state: present
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install MongoDB 4.4.22
+      apt:
+        name:
+          - mongodb-org=4.4.22
+          - mongodb-org-server=4.4.22
+          - mongodb-org-shell=4.4.22
+          - mongodb-org-mongos=4.4.22
+          - mongodb-org-tools=4.4.22
+        state: present
+        update_cache: yes
+
+    - name: Start MongoDB service
+      service:
+        name: mongod
+        state: restarted
+        enabled: true
+
+    - name: Wait for little time
+      pause:
+          seconds: 10
+    
+    - name: Replace Values in mongod.conf
+      replace:
+        path: /etc/mongod.conf
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      loop:
+        - { regexp: '#  engine:', replace: '  engine: wiredTiger' }
+        - { regexp: '127.0.0.1', replace: '0.0.0.0' }
+        - { regexp: '#replication', replace: 'replication' }
+
+    - name: Add Additional Data to mongod.conf
+      lineinfile:
+          path: /etc/mongod.conf
+          insertafter: "{{ item.insert_after }}"
+          line: "{{ item.new_line }}"
+      loop:
+        # - { insert_after: "^  engine:", new_line: "wiredTiger" }
+        - { insert_after: "^systemLog:", new_line: "  logRotate: reopen" }
+        - { insert_after: "^net:", new_line: "  bindIp: 0.0.0.0" }
+        - { insert_after: "^replication:", new_line: "  oplogSizeMB: 1" }
+        - { insert_after: "^replication:", new_line: "  replSetName: rs0" }
+
+    - name: Stop MongoDB
+      service:
+        name: mongod
+        state: stopped
+        enabled: true
+        
+    - name: Start MongoDB
+      service: 
+        name: mongod
+        state: started
+        enabled: true
+
+    - name: Pause for 10 seconds until listen port from default ip
+      pause:
+        seconds: 10
+
+    - name: Intiate the cluster members
+      shell: |
+           mongo --eval "config = { _id:'{{ REPLICA_NAME }}', members:[{ _id:0, host:\"{{ groups['mongodb'][0] }}:27017\"},{ _id:1, host:\"{{ groups['mongodb'][1] }}:27017\"},{ _id:2, host:\"{{ groups['mongodb'][2] }}:27017\", arbiterOnly:true}]}; rs.initiate(config);"
+      when: inventory_hostname == groups['mongodb'][0] 
+
+    - name: Pause for 10 seconds until initialize the replica
+      pause:
+        seconds: 10
+
+    - name: Create new database and user
+      shell: |
+          mongo --eval "db = db.getSiblingDB('{{ DB }}')"
+          mongo --eval "db = db.getSiblingDB('{{ DB }}'); db.createUser({user: '{{ DB_USER }}', pwd: '{{ DB_PASSWRD }}', roles: [{role: 'userAdmin', db: '{{ DB }}'}, {role: 'readWrite', db: '{{ DB }}'}]})"
+          mongo --eval "db = db.getSiblingDB('{{ DB }}'); db.mycollection.insert({})"
+      #when: primary_node.stdout is defined
+      when: inventory_hostname == groups['mongodb'][0] 
+
+    - name: Pause for 5 seconds until initialize the replica
+      pause:
+        seconds: 5
+
+    - name: Copy MongoDB dump file
+      copy:
+        src: "/opt/MONGO/"   # Specify the path to your MongoDB dump on the Ansible playbook server
+        dest: "/opt/MONGO/"   # Specify the destination path on the target server
+      # delegate_to: (destination sever ip or u can comment this)
+      when: inventory_hostname == groups['mongodb'][0] 
+
+    - name: Restore the facetone dump file  
+      shell: mongorestore -h {{ groups['mongodb'][0] }} --nsInclude={{ DB }}.* /opt/MONGO
+      #shell: mongorestore -h {{ primary_node.stdout }} --nsInclude={{ DB }}.* /opt/MONGO
+      when: inventory_hostname == groups['mongodb'][0] 
+
