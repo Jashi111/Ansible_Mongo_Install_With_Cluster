@@ -1,7 +1,7 @@
-Overview
 This playbook automates the installation and configuration of MongoDB version 4.4.22 on a group of servers. It performs tasks such as setting up a MongoDB replica set, creating a user, and restoring a MongoDB dump file. The playbook can be used to set up a 3-node MongoDB cluster, including an arbiter.
 
 Prerequisites
+
 Ansible should be installed on the control machine.
 MongoDB servers should be defined under the mongodb group in your Ansible inventory file.
 The necessary variables should be provided in a vars.yml file.
@@ -16,6 +16,7 @@ Database Creation: Creates a new MongoDB database and user with specified creden
 Restore MongoDB Dump: Copies a MongoDB dump file from the control machine to the target server and restores it into the specified database.
 
 Variables
+
 All necessary variables are stored in vars.yml:
 
 DB: Name of the MongoDB database.
