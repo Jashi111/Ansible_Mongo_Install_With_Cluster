@@ -8,6 +8,11 @@
   vars_files:
     - vars.yml
 
+  vars_prompt:
+    - name: confirm_pre_tasks
+      prompt: "Do you want to execute the pre-tasks (stop and purge existing MongoDB setup)? (yes/no)"
+      private: no
+
   pre_tasks:
 
     - name: Stop MongoDB service
@@ -15,44 +20,51 @@
         name: mongod
         state: stopped
         enabled: false
+      when: confirm_pre_tasks == 'yes'
 
     - name: Remove MongoDB packages
       ansible.builtin.apt:
         name: "mongodb-org*"
         state: absent
         purge: yes
+      when: confirm_pre_tasks == 'yes'
 
     - name: Remove MongoDB data directory
       ansible.builtin.file:
         path: /var/lib/mongodb
         state: absent
+      when: confirm_pre_tasks == 'yes'
 
     - name: Remove MongoDB log directory
       ansible.builtin.file:
         path: /var/log/mongodb
         state: absent
+      when: confirm_pre_tasks == 'yes'
 
     - name: Remove MongoDB configuration file
       ansible.builtin.file:
         path: /etc/mongod.conf
         state: absent
+      when: confirm_pre_tasks == 'yes'
 
     - name: Remove MongoDB repository file
       ansible.builtin.file:
         path: "/etc/apt/sources.list.d/mongodb-org-*.list"
         state: absent
+      when: confirm_pre_tasks == 'yes'
 
     - name: Update APT package list
       ansible.builtin.apt:
         update_cache: yes
+      when: confirm_pre_tasks == 'yes'
 
+
+  tasks:
     - name: Install pip using apt
       apt:
         name: python3-pip
         state: present
 
-
-  tasks:
     - name: Install gnupg package
       apt:
         name: gnupg
