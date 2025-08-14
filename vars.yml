@@ -2,5 +2,5 @@
 #please add the mongodb environmental variables in here.
 REPLICA_NAME: rs0
 DB_NAME: ABC
-DB_USER: user
-DB_PASSWRD: password
+DB_USER: jashitha
+DB_PASSWRD: Jashi111!
