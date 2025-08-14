@@ -1,6 +1,7 @@
 ---
 # Author: jashi111
-# Description: Playbook to install MongoDB 7.0 and configure the system
+# Description: Playbook to install MongoDB 8.0 and configure the system
+
 - name: Install and Configure MongoDB Replica Set
   hosts: mongodb
   become: true
@@ -58,64 +59,58 @@
         update_cache: yes
       when: confirm_pre_tasks == 'yes'
 
-
   tasks:
     - name: Install pip using apt
-      apt:
+      ansible.builtin.apt:
         name: python3-pip
         state: present
 
-    - name: Install gnupg package
+    - name: Install pymongo
       apt:
-        name: gnupg
+        name: python3-pymongo
         state: present
-      register: gnupg_install
-      #failed_when: gnupg_install.rc != 0
+        update_cache: yes
 
     - name: Download MongoDB GPG key
-      become: true
-      become_user: root
-      shell: |
-        curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc -o /etc/apt/trusted.gpg.d/mongodb-server-7.0.asc
-      register: gpg_key
-      #failed_when: "'error' in gpg_key.stderr or gpg_key.rc != 0"
+      ansible.builtin.get_url:
+        url: https://www.mongodb.org/static/pgp/server-8.0.asc
+        dest: /usr/share/keyrings/mongodb-server-8.0.asc
+        mode: '0644'
+
+    - name: Convert MongoDB GPG key to dearmored format
+      ansible.builtin.command:
+        cmd: gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg /usr/share/keyrings/mongodb-server-8.0.asc
+      args:
+        creates: /usr/share/keyrings/mongodb-server-8.0.gpg
 
     - name: Add MongoDB repository
-      apt_repository:
-        repo: "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse"
-        filename: mongodb-org-7.0
-      register: repo_add
-      #failed_when: repo_add.rc != 0
-
-    - name: Install MongoDB Service v7.0.14
-      apt:
-        name:
-          - mongodb-org=7.0.14
-          - mongodb-org-database=7.0.14
-          - mongodb-org-server=7.0.14
-          - mongodb-mongosh
-          - mongodb-org-mongos=7.0.14
-          - mongodb-org-tools=7.0.14
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse"
+        filename: "mongodb-org-8.0"
         state: present
-      register: mongodb_install
-      #failed_when: mongodb_install.rc != 0
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install MongoDB
+      ansible.builtin.apt:
+        name: mongodb-org
+        state: present
+        update_cache: yes
 
     - name: Reload systemd manager configuration
-      systemd:
+      ansible.builtin.systemd:
         daemon_reload: yes
-      register: systemd_reload
-      #failed_when: systemd_reload.rc != 0
 
     - name: Ensure MongoDB service is started
-      service:
+      ansible.builtin.service:
         name: mongod
         state: started
         enabled: true
-      register: service_status
-      #failed_when: service_status.rc != 0
 
     - name: Replace Values in mongod.conf
-      replace:
+      ansible.builtin.replace:
         path: /etc/mongod.conf
         regexp: "{{ item.regexp }}"
         replace: "{{ item.replace }}"
@@ -123,11 +118,9 @@
         - { regexp: '#  engine:', replace: '  engine: wiredTiger' }
         - { regexp: '127.0.0.1', replace: '0.0.0.0' }
         - { regexp: '#replication', replace: 'replication' }
-      register: conf_replace
-      #failed_when: conf_replace.failed > 0
 
     - name: Add Additional Data to mongod.conf
-      lineinfile:
+      ansible.builtin.lineinfile:
         path: /etc/mongod.conf
         insertafter: "{{ item.insert_after }}"
         line: "{{ item.new_line }}"
@@ -136,22 +129,18 @@
         - { insert_after: "^net:", new_line: "  bindIp: 0.0.0.0" }
         - { insert_after: "^replication:", new_line: "  oplogSizeMB: 1" }
         - { insert_after: "^replication:", new_line: "  replSetName: {{ REPLICA_NAME }}" }
-      register: lineinfile_status
-      #failed_when: lineinfile_status.failed > 0
 
     - name: Restart MongoDB
-      service:
+      ansible.builtin.service:
         name: mongod
         state: restarted
         enabled: true
-      register: restart_status
-      #failed_when: restart_status.rc != 0
 
     - name: Wait for little time
-      pause:
-          seconds: 10    
-    
-    - name: Ensure replicaset rs0 exists
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Ensure replicaset exists
       community.mongodb.mongodb_replicaset:
         login_host: "{{ groups['mongodb'][0] }}"
         login_user: admin
@@ -162,18 +151,48 @@
           - host: "{{ groups['mongodb'][1] }}:27017"
           - host: "{{ groups['mongodb'][2] }}:27017"
         arbiter_at_index: 2
-      when: inventory_hostname == groups['mongodb'][0]
+      delegate_to: "{{ groups['mongodb'][0] }}"
+      run_once: true
+    
+    - name: Wait for replication setup
+      ansible.builtin.pause:
+        seconds: 10
 
-    - name: Wait for little time
-      pause:
-          seconds: 10
-
-    - name: Create 'facetone' database user with name 'duo' and password 'DuoS123'.
+    - name: Find the MongoDB primary node
+      ansible.builtin.shell: >
+        mongosh --quiet --eval
+        'print(rs.status().members.filter(m => m.stateStr == "PRIMARY")[0].name)'
+      register: mongo_primary_output
+      changed_when: false
+      delegate_to: "{{ groups['mongodb'][0] }}"
+      run_once: true
+    
+    - name: Set primary_host fact (strip any trailing whitespace)
+      set_fact:
+        primary_host: "{{ mongo_primary_output.stdout.strip() }}"
+    
+    - name: Create MongoDB user on primary node
       community.mongodb.mongodb_user:
+        login_host: "{{ primary_host.split(':')[0] }}"  # remove port if exists
+        login_port: "{{ (primary_host.split(':')[1] | default('27017')) | int }}"
         database: "{{ DB_NAME }}"
         name: "{{ DB_USER }}"
         password: "{{ DB_PASSWRD }}"
-        roles: readWrite,dbAdmin,userAdmin
+        roles:
+          - readWrite
+          - dbAdmin
+          - userAdmin
         state: present
-      when: inventory_hostname == groups['mongodb'][0]
+      delegate_to: "{{ primary_host.split(':')[0] }}"
+      run_once: true
 
+    - name: Insert sample document using mongodb_shell
+      community.mongodb.mongodb_shell:
+        db: "{{ DB_NAME }}"
+        login_host: "{{ primary_host.split(':')[0] }}"
+        login_user: "{{ DB_USER }}"
+        login_password: "{{ DB_PASSWRD }}"
+        login_database: "{{ DB_NAME }}"
+        eval: 'db.sample_collection.insertOne({message: "Inserted by Ansible Module", created_at: new Date()})'
+      delegate_to: "{{ primary_host.split(':')[0] }}"
+      run_once: true
